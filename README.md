@@ -1,3 +1,6 @@
+<img width="3000" height="4000" alt="20260827_204259" src="https://github.com/user-attachments/assets/ebc7af71-f473-4e97-bb99-d21d3864ebc2" />
+
+
 # PCIe Peer-to-Peer between two AMD MI50s on an Intel X99 host: a saga in three gates
 
 A case study in "the driver says P2P works, and the data is garbage." If you run an AMD
