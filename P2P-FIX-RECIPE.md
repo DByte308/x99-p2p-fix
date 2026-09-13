@@ -93,11 +93,11 @@ BIOS, then recheck `lspci` until the BAR addresses are below 16 TiB.
 
 **BIOS settings that matter:**
 
-- **Above 4G decoding** (sometimes “reduce above 4G” or the 64-bit MMIO option). This
+- **Above 4G decoding** (sometimes "reduce above 4G" or the 64-bit MMIO option). This
   must be enabled, or the large GPU BARs will not map at all and the cards fall back to a
   tiny window. It is the switch that lets the 32 GiB BARs live above the first 4 GiB.
 - **Resizable BAR (ReBAR)**. Enable it so the full VRAM is exposed as one large BAR. This
-  is the gate marked “resizable BARs are present” in the main write-up; without it you
+  is the gate marked "resizable BARs are present" in the main write-up; without it you
   only get addressable VRAM, and P2P over the whole card is limited.
 - The **MMIO high base / window size** values you are adjusting in step 3's variable are
   what actually decide *where* those enabled BARs land. Keep them below 16 TiB.
