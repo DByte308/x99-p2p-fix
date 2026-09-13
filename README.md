@@ -135,6 +135,48 @@ So the point of setting up P2P was that token generation went from about 75 to 7
 to about 92 to 98 tok/s, and prefill from about 1840 up to about 1995, because the cards
 talk directly instead of through the CPU and RAM on every step.
 
+## How to check if P2P actually works
+
+P2P can report "enabled" and still hand back garbage, so verify it in three steps, in order. If any step fails, the later ones don't matter.
+
+### 1. Does the driver allow the peer path?
+
+The first gate is `hipDeviceCanAccessPeer`. This small check prints whether each card can access the other:
+
+```cpp
+#include <hip/hip_runtime.h>
+#include <cstdio>
+
+int main() {
+    int canAB = 0, canBA = 0;
+    hipDeviceCanAccessPeer(&canAB, 0, 1);
+    hipDeviceCanAccessPeer(&canBA, 1, 0);
+    printf("canAccessPeer 0->1 = %d\n", canAB);
+    printf("canAccessPeer 1->0 = %d\n", canBA);
+    return (canAB && canBA) ? 0 : 1;
+}
+```
+
+Build with `hipcc` and run it. A `0` means the kernel is not allowing the path, which points at the host bridge not being in the P2P whitelist (or the distance check failing). You can also confirm with `dmesg | grep -i p2p`.
+
+### 2. Do the BARs sit inside the 44-bit mask?
+
+The peer's VRAM has to be addressable by the local GPU. gfx906 uses a 44-bit DMA mask, so the peer's BAR address must be below 2^44 (16 TiB).
+
+Check where the GPU BARs actually are:
+
+```
+lspci -v -s <bus:device.function>
+```
+
+Look for the 32 GiB entries, for example `Memory at <address> (64-bit, prefetchable) [size=32G]`. The address must be below 16 TiB. On my board the firmware put them around 56 TiB, which is why the mask check failed even after the whitelist fix.
+
+### 3. Is the data actually correct, both ways?
+
+The only real proof is a bidirectional, byte-exact transfer. Copy from 0 to 1 and from 1 to 0, compare the bytes, and re-seed the source buffer before each direction. Reusing the same buffer with bitwise-complement patterns without re-seeding will produce false failures (that was my "read bug").
+
+A minimal HIP test that does direct peer copies in both directions, plus a re-seed before each run, will tell you if the fabric is clean. If both directions come back with 0 mismatched bytes, P2P is real and the speed numbers are trustworthy.
+
 ## Credit
 
 **Assistmeister** provided a build that this fix builds on. If you are working with the
