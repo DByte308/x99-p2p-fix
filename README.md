@@ -1,200 +1,157 @@
 <img width="3000" height="4000" alt="20260827_204259" src="https://github.com/user-attachments/assets/ebc7af71-f473-4e97-bb99-d21d3864ebc2" />
 
+# PCIe Peer-to-Peer between two AMD MI50s on an Intel X99 host
 
-# PCIe Peer-to-Peer between two AMD MI50s on an Intel X99 host: a saga in three gates
+A write-up about getting two AMD MI50 (Vega 20 / gfx906, 32 GiB each) cards to talk to
+each other over PCIe on an older Intel X99 (Broadwell-E) platform. The driver said peer
+access was possible, but the data was garbage. Here is what was wrong and what fixed it.
 
-A case study in "the driver says P2P works, and the data is garbage." If you run an AMD
-GPU (Vega 20 / gfx906) on an Intel X99 box and want two cards talking to each other over
-PCIe instead of round-tripping through system RAM, read this before you burn a weekend.
+## Why I wanted P2P
 
----
+The setup is a small LLM box with two MI50s, 64 GiB VRAM total. To use both cards for one
+model you can either:
 
-## Why I even cared
+- **Layer split**: card A gets the first half of the layers, card B the second half. Data
+  moves through host memory between the two halves on every step. Works, but slow.
+- **Tensor split**: both cards work on the same layers and an all-reduce joins the halves
+  at each layer. This is faster, but only if the two cards can move data directly between
+  each other over PCIe (Peer-to-Peer, P2P), without going through the CPU and system RAM.
 
-I run a small local LLM box: two AMD MI50 cards (Vega 20, 32 GiB each) on an older Intel
-X99 platform (Broadwell-E). That's 64 GiB of VRAM total, plenty for a big model, but only
-if both cards can actually cooperate.
+So the goal was fast, correct tensor-split generation. P2P is the part that makes that
+possible.
 
-The way you normally split a model across two GPUs is *layer split*: card A holds the first
-half of the layers, card B holds the second half, and every token hops through host memory
-between them. It works, but it's slow: that host round-trip is the bottleneck on every
-decode step.
+## How the driver decides a GPU is peer-accessible
 
-What I **wanted** was *tensor split*: both cards work on the same layers together, and a
-fast all-reduce stitches the halves together at every layer. Tensor split is the strategy
-that actually wins, but it only wins if the two cards can move data directly between
-themselves over PCIe, without dragging the CPU and system RAM into it. That direct
-card-to-card link is **Peer-to-Peer (P2P)**, and it's what this whole story is about.
+AMD's driver only reports a device as peer-accessible when several conditions are all true:
 
-So: the goal was never "check a box that says P2P enabled." The goal was **fast, correct
-tensor-split token generation.** P2P was just the road. I kept losing sight of that, which
-is exactly how I wasted most of my time.
+- the kernel allows P2P on this host bridge
+- resizable BARs are present (full visible VRAM)
+- the p2p distance check passes (allowed on the same host bridge)
+- the peer's BAR fits the GPU's DMA mask
 
----
+On this machine each one was wrong in turn, which made it look like one bug when it was
+really three separate problems.
 
-## The short version
+### Gate 1: the host bridge was not whitelisted
 
-If you take one thing from this: **on Intel X99, don't lift the GPU's DMA address mask to
-meet its BARs, move the BARs down into the GPU's native address window. The "forced P2P"
-path is fast but silently corrupt.** Crank it up, and P2P lights up green... and hands you
-garbage.
+The kernel keeps a whitelist of Intel host bridges it considers safe for P2P. The
+Broadwell-EP bridge (`8086:6f00`) is not on it; the list covers Skylake-E and newer. So from
+a stock kernel, `hipDeviceCanAccessPeer` returned 0.
 
-Also: the scary "hardware read bug" I chased for hours was my own test harness. Both of
-those sentences are the whole story in microcosm: *I kept fighting the machine instead of
-listening to it.*
+Fix: build a kernel with that bridge whitelisted.
 
----
+### Gate 2: the BARs were above the GPU's DMA mask
 
-## What unfolded
+After the whitelist fix, still no P2P. These MI50s use a native 44-bit DMA mask (AMD only
+uses 48 bits on newer silicon, GC 9.4.2 and up). This board's firmware placed the 32 GiB GPU
+BARs at around 56 TiB, which is above bit 44. So the address-fit check failed even though
+the distance check passed.
 
-AMD's driver only calls a device "peer-accessible" when several things are all true at the
-same time. Sounds trivial. On my machine, every single one of them was wrong, one after
-another, so what looked like one maddening mystery bug was really three stacked problems
-wearing a trench coat.
+### Gate 3: forcing a 48-bit mask made P2P "work" but corrupt
 
-### Gate 1: the kernel didn't even allow this path
+The next obvious step was to force the mask up to 48 bits. That made the HIP layer report
+P2P enabled, but with a worse problem: the data was silently wrong. Writes from GPU 0 to
+GPU 1 landed as garbage or bit-flipped values, and the other direction only worked when the
+data went through host memory. P2P was enabled and handing back corrupt data.
 
-The kernel has a whitelist of Intel host bridges it considers safe for P2P. My
-Broadwell-EP bridge (`8086:6f00`) isn't on it, the list starts at Skylake-E and newer. From
-a stock kernel, `hipDeviceCanAccessPeer` said **0**. I wasn't stuck at step three; I was
-dead before I reached the start.
+## Things that did not work
 
-*Fix: build a kernel with the bridge whitelisted.*
+- Stock kernel with no patches: no P2P, bridge not whitelisted.
+- Whitelist patch alone: still no P2P, BARs above the 44-bit mask.
+- Whitelist plus forced 48-bit mask: P2P "enabled" but corrupt. The X99 fabric has no safe
+  direct P2P path at high MMIO. This was the main dead end.
+- Writing PCI config registers directly to move the MMIO window: locked on this board. The
+  firmware call returned success but the register never changed.
+- A DSDT/ACPI override at boot: ended in initramfs emergency mode and conflicted with the
+  firmware's own tables, so it was dropped.
+- RCCL for the all-reduce: the llama build in use has NCCL compiled out, and a standalone
+  2-GPU RCCL all-reduce deadlocks here.
+- Various speedup options (speculative decoding, a community vLLM fork): did not fit this
+  model on this chip, rolled back.
 
-### Gate 2: the BARs lived above the GPU's head
+None of these helped.
 
-Whitelist added, rebuilt, still no P2P. Here's the subtle part. These MI50s natively use a
-**44-bit DMA mask** (AMD only uses 48 bits on newer silicon). But this board's firmware put
-the 32 GiB GPU BARs up around **56 TiB**, miles above bit 44. So the "address fit" check
-failed. Distance check passed, mask check failed.
+## What fixed it
 
-### Gate 3: the trap, "P2P enabled" but quietly corrupt
+### 1. Move the BARs down instead of raising the mask
 
-The obvious next move: force the mask up to 48 bits. Do that, and the HIP layer lights up
-**P2P ENABLED**. Victory lap time? No. Now I had a *much* worse problem: the data was
-**silently wrong**. GPU 0 → 1 writes landed as garbage/bit-flipped artifacts, and the other
-direction only behaved when forced through host memory.
-
-P2P was "on," and it was handing me corrupted numbers with a smile. That's the state that
-cost me the most time, because it's the one that makes you doubt your cards.
-
----
-
-## The dead ends (so you don't walk them)
-
-- **Stock kernel:** `hipDeviceCanAccessPeer = 0`. Bridge not whitelisted.
-- **Whitelist alone:** still no P2P. BARs above the 44-bit mask.
-- **Whitelist + forced 48-bit mask:** "P2P enabled," silently corrupt. The X99 fabric has
-  **no safe direct path at high MMIO**. This was the real poison pill.
-- **Writing the PCI config registers directly** to move the MMIO window: **locked** on this
-  board. The firmware call said success; the register never moved.
-- **DSDT/ACPI override at boot:** landed in initramfs emergency mode, fighting the
-  firmware's own tables. Abandoned.
-- **RCCL for the all-reduce:** my llama build ships with NCCL compiled out, and the
-  standalone 2-GPU RCCL all-reduce deadlocks here. Dead end.
-- **Various speedup forks** (speculative decoding, community vLLM builds): none fit this
-  model on this chip. Rolled back.
-
-None of these moved the needle. The fix came from **stopping the fight**.
-
----
-
-## What actually fixed it
-
-### 1. Move the BARs *down*, don't lift the mask
-
-The native 44-bit mask was **right**; I'd had the wrong goal the whole time. So instead of
-pushing the mask up to meet the BARs, I pushed the **BARs down** into the 44-bit window.
+The native 44-bit mask was correct. The mistake was trying to match the BARs to a higher
+mask. The right move was to place the BARs inside the 44-bit window.
 
 Direct register writes are locked, but AMI's reference code exposes the MMIO controls as a
-**writable UEFI policy variable**, so the firmware programs the window before the OS ever
-sees it. On my MSI board that's the `IntelSetup` variable (two DWORDs: MMIO high base and
-size). I dropped the window from ~56 TiB to a **1 TiB base / 1024 GiB window**, comfortably
-under the 44-bit ceiling.
+writable UEFI policy variable, so the firmware programs the window before the OS reads it.
+On this MSI board that is the `IntelSetup` variable (two DWORDs, MMIO high base and size).
+The window was changed from around 56 TiB to a 1 TiB base with a 1024 GiB window, below the
+44-bit ceiling.
 
-### 2. A kernel that gets out of its own way
+### 2. The kernel that worked
 
-The kernel I settled on combines three things:
+This kernel does three things:
 
-1. whitelist entries for the `6f00`/`6f01` bridge IDs → clears Gate 1;
-2. a gfx906-scoped rule that only keeps GPU↔GPU direct attach when the kernel's own P2PDMA
-   distance check passes;
-3. **stock `gmc_v9_0.c`**, the native 44-bit mask, no 48-bit hack. That last point is the
-   load-bearing invariant: **don't touch the mask once the BARs are low.**
+1. Whitelist entries for the `6f00` / `6f01` bridge IDs, which fixes Gate 1.
+2. A gfx906-scoped rule that keeps GPU-to-GPU DMA-buf attachments direct only when the
+   kernel's own P2PDMA distance check passes.
+3. Stock `gmc_v9_0.c`, the native 44-bit mask with no 48-bit change. This is the important
+   part: leave the mask alone once the BARs are low.
 
-After boot, both cards report full 32 GiB BARs at `0x10000000000` and `0x11000000000`, inside the mask, with KFD peer links present.
+After boot both cards report full 32 GiB BARs at `0x10000000000` and `0x11000000000`,
+inside the mask, with KFD peer links present.
 
-### 3. Use the fork's custom all-reduce, not RCCL
+### 3. Use the in-tree custom all-reduce, not RCCL
 
-With NCCL compiled out, tensor split finally reduced through the fork's **custom
-AllReduce** (broadcast + two-shot, peer-write, size-adaptive), and it beats layer split.
+With NCCL compiled out, tensor split reduced through the fork's custom AllReduce (broadcast
+plus two-shot, peer-write, size-adaptive). It works and is faster than layer split.
 
----
+## The "read bug" was in the test, not the hardware
 
-## The "read bug" was me, not the hardware
+At one point it looked like there was directional peer-read corruption. There was not. The
+throughput test reused bitwise-complement patterns (`0xa5a55a5a` / `0x5a5aa5a5`) without
+re-seeding the source buffer between directions, so it checked the data against the wrong
+expected pattern and reported all reads as bad with `got = ~want`.
 
-Halfway through I was *convinced* there was directional CU peer-**read** corruption.
-There wasn't, and I'm glad I kept drilling.
+After re-seeding the source buffer before every read:
 
-My throughput test was reusing **bitwise-complement** patterns (`0xa5a55a5a` /
-`0x5a5aa5a5`) across directions without re-seeding the source buffer first. So it "verified"
-correct data against the *wrong* expected pattern, and reported `16777216/16777216 bad`,
-`got = ~want`. The machine was right; my test was lying.
+- compute-read and compute-write, both directions: 0 bad
+- DMA (`hipMemcpyPeer`): clean both ways
+- no more `0x3333` / garbage values on the low-MMIO kernel
 
-Once I re-seed the source buffer before every read:
+P2P data is byte-clean in both directions. The hardware was fine.
 
-- compute-read + compute-write, **both directions**: 0 bad;
-- DMA (`hipMemcpyPeer`): clean both ways;
-- no more `0x3333`/garbage once on the low-MMIO kernel.
+## Why P2P was worth setting up
 
-**P2P data is byte-clean in both directions. The hardware was innocent the entire time.**
-
----
-
-## Why did I want P2P working? Because of this.
-
-Here are the numbers that made the whole slog worthwhile: same workload, each config
-measured alone, cold:
+Same workload, each config measured alone, cold:
 
 | Metric | Tensor split + custom AR | Layer split | Delta |
 |---|---|---|---|
-| Decode (token gen) | ~92–98 tok/s | ~75–78 tok/s | **+22–26%** |
-| Prefill | ~1995 tok/s | ~1840 tok/s | +8–14% |
-| End-to-end latency | n/a | n/a | **−13–20%** |
+| Decode (token gen) | ~92 to 98 tok/s | ~75 to 78 tok/s | +22 to 26% |
+| Prefill | ~1995 tok/s | ~1840 tok/s | +8 to 14% |
+| End-to-end latency | n/a | n/a | -13 to 20% |
 
-Correctness held across the full sweep (deterministic greedy math/reasoning, zero garbage),
-and the tensor config wins decode at **every** context length, the widest margin ~+25%,
-at long context.
+Correctness held across the sweep (deterministic greedy math and reasoning, no garbage).
+The tensor config wins decode at every context length, with the widest gap around +25% at
+long context.
 
-So the whole point of P2P was never the checkbox. It's that token generation went from
-~75–78 to ~92–98 tokens per second, and prefill from ~1840 to ~1995, because the two cards
-finally talk directly instead of dragging the CPU and RAM through every step.
+So the point of setting up P2P was that token generation went from about 75 to 78 tok/s up
+to about 92 to 98 tok/s, and prefill from about 1840 up to about 1995, because the cards
+talk directly instead of through the CPU and RAM on every step.
 
----
+## Credit
 
-## Credit where it's due
+**Assistmeister** provided a build that this fix builds on. If you are working with the
+same hardware, that is a good place to start.
 
-A big part of the reason this didn't eat weeks of my life is **Assistmeister**, who handed me a build I could build upon to get to my fix. If you happen across this post with the same hardware, his work is a good place to start from, and mine is really a small delta on top of it.
+## Takeaways
 
----
+1. `hipDeviceCanAccessPeer = 1` does not mean the data path works. Verify it with
+   bidirectional byte-correct transfers before trusting it.
+2. On Intel X99 with an AMD GPU: move the BARs down, do not raise the mask. The forced
+   48-bit path is corrupt; the native 44-bit mask with low-MMIO BARs is clean.
+3. This was three separate gates (whitelist, mask fit, fabric correctness). Each needed a
+   different fix; there is no single "enable P2P" switch.
+4. If a config register write is locked, look for a writable UEFI policy variable. The
+   firmware may expose the same control another way.
+5. Check the test before blaming the hardware. Re-seed buffers and do not reuse complement
+   patterns across directions.
 
-## The takeaways, hopefully these save you a day
-
-1. **`hipDeviceCanAccessPeer = 1` is not proof of a working data path.** Prove it with
-   bidirectional, byte-correct transfers before you trust a single number from it.
-2. **On Intel X99 with an AMD GPU: move the BARs down, never raise the mask.** The forced
-   48-bit path is corrupt; the 44-bit-native + low-MMIO path is clean. This is the fix.
-3. **This "one bug" was really three stacked gates** (whitelist → mask-fit → fabric
-   correctness). There was never a single "enable P2P" switch, each gate needed its own,
-   different fix.
-4. **If a config-register write is locked, hunt for a writable UEFI policy variable.** The
-   firmware often exposes the same control through a second, working door.
-5. **Suspect your test before you suspect your hardware.** Re-seed buffers, never reuse
-   complement patterns across directions. The infamous "read bug" was a harness bug, and
-   nearly sent me on a mission to RMA perfectly good cards.
-
----
-
-*Hardware-specific offsets, GUIDs, and kernel build recipes are intentionally omitted here
-the *approach* and the invariants above are the portable part. If you've got a dual-GPU
-X99 build, I hope this gets you to clean P2P faster than it got me.*
+Hardware-specific offsets, GUIDs, and build recipes are left out here. The approach and the
+rules above are the reusable part.
