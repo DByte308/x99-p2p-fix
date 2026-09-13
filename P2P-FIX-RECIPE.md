@@ -91,6 +91,17 @@ with room for the full VRAM. A low base (around 1 TiB) with a window large enoug
 cover both cards works, but adjust to your own VRAM and other devices. Reconfigure the
 BIOS, then recheck `lspci` until the BAR addresses are below 16 TiB.
 
+**BIOS settings that matter:**
+
+- **Above 4G decoding** (sometimes “reduce above 4G” or the 64-bit MMIO option). This
+  must be enabled, or the large GPU BARs will not map at all and the cards fall back to a
+  tiny window. It is the switch that lets the 32 GiB BARs live above the first 4 GiB.
+- **Resizable BAR (ReBAR)**. Enable it so the full VRAM is exposed as one large BAR. This
+  is the gate marked “resizable BARs are present” in the main write-up; without it you
+  only get addressable VRAM, and P2P over the whole card is limited.
+- The **MMIO high base / window size** values you are adjusting in step 3's variable are
+  what actually decide *where* those enabled BARs land. Keep them below 16 TiB.
+
 ## Step 4. Keep the native 44-bit DMA mask
 
 Do not patch the mask. On gfx906 the driver uses a 44-bit mask, and AMD only raises to
@@ -136,6 +147,7 @@ changed token rather than a silent wrong number.
 
 - [ ] Host bridge whitelisted in `pci_p2pdma_whitelist[]`
 - [ ] `hipDeviceCanAccessPeer` = 1 both directions
+- [ ] BIOS: Above 4G decoding and Resizable BAR enabled
 - [ ] Both GPU BARs below 16 TiB in `lspci`
 - [ ] Native 44-bit mask left untouched
 - [ ] Direct GPU attach gated on the P2P distance check
