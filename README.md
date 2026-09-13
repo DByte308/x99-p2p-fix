@@ -102,6 +102,8 @@ inside the mask, with KFD peer links present.
 With NCCL compiled out, tensor split reduced through the fork's custom AllReduce (broadcast
 plus two-shot, peer-write, size-adaptive). It works and is faster than layer split.
 
+> A step by step, portable implementation guide is in [P2P-FIX-RECIPE.md](P2P-FIX-RECIPE.md).
+
 ## The "read bug" was in the test, not the hardware
 
 At one point it looked like there was directional peer-read corruption. There was not. The
