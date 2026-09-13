@@ -170,6 +170,12 @@ finally talk directly instead of dragging the CPU and RAM through every step.
 
 ---
 
+## Credit where it's due
+
+A big part of the reason this didn't eat weeks of my life is **Assistmeister**, who handed me a build I could build upon to get to my fix. If you happen across this post with the same hardware, his work is a good place to start from — and mine is really a small delta on top of it.
+
+---
+
 ## The takeaways — hopefully these save you a day
 
 1. **`hipDeviceCanAccessPeer = 1` is not proof of a working data path.** Prove it with
