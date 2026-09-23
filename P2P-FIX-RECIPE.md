@@ -98,6 +98,10 @@ with room for the full VRAM. A low base (around 1 TiB) with a window large enoug
 cover both cards works, but adjust to your own VRAM and other devices. Reconfigure the
 BIOS, then recheck `lspci` until the BAR addresses are below 16 TiB.
 
+> A worked, verified example for one board (Gigabyte X99-UD4-CF, BIOS F22), including
+> the exact variable, offsets, and enum values, is in
+> [boards/gigabyte-x99-ud4-f22.md](boards/gigabyte-x99-ud4-f22.md).
+
 **BIOS settings that matter:**
 
 - **Above 4G decoding** (sometimes "reduce above 4G" or the 64-bit MMIO option). This
