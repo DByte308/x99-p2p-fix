@@ -199,6 +199,11 @@ topology.
 **Assistmeister** provided a build that this fix builds on. If you are working with the
 same hardware, that is a good place to start.
 
+**David Sanftenberg** ([dbsanfte](https://github.com/dbsanfte)) contributed the
+[Llaminar four-MI50 + 7900 XTX PEX case study](case-studies/llaminar-mi50-pex-p2p.md),
+which extends this write-up to a separate Intel VT-d/PEX topology. Thanks for the
+contribution, David.
+
 ## Takeaways
 
 1. `hipDeviceCanAccessPeer = 1` does not mean the data path works. Verify it with
