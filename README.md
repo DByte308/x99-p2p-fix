@@ -179,6 +179,21 @@ The only real proof is a bidirectional, byte-exact transfer. Copy from 0 to 1 an
 
 A minimal HIP test that does direct peer copies in both directions, plus a re-seed before each run, will tell you if the fabric is clean. If both directions come back with 0 mismatched bytes, P2P is real and the speed numbers are trustworthy.
 
+## Additional hardware reports
+
+[Llaminar's four-MI50 + 7900 XTX / PEX case study](case-studies/llaminar-mi50-pex-p2p.md)
+records a separate Intel VT-d/PEX setup tested on 2026-11-07. BIOS MMIO High Base
+**4T** with **1024G** granularity, **identity DMA (`iommu=pt`)**, and the documented
+kernel/driver/module stack passed all **20 directed native peer reads**. The report
+includes exact software identities, kernel patches, `pex_window` configuration,
+final BAR ranges, failed comparisons, and recovery details.
+
+The BIOS and DMA-domain changes were tested together. A subsequent captured
+Llaminar peer transfer still had a byte mismatch, so this report establishes a
+working native-read configuration; collective, model, and performance qualification
+remain open. It complements the X99 results above with evidence from another
+topology.
+
 ## Credit
 
 **Assistmeister** provided a build that this fix builds on. If you are working with the
