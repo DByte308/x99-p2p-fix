@@ -11,9 +11,9 @@ Nothing here is tied to a particular person's build.
 For a separate Intel VT-d/PEX topology with four MI50s and a 7900 XTX, see
 [Llaminar's tested configuration and findings](case-studies/llaminar-mi50-pex-p2p.md).
 That report records lower MMIO **together with identity DMA**, exact kernel and
-module identities, and an outstanding captured-transfer failure after native
-reads passed. Its software changes and qualification scope are documented
-separately from this X99 recipe.
+module identities, the public PEX module source, and the Llaminar correction
+that resolved the initial captured peer-channel mismatch. Its software changes
+and qualification scope are documented separately from this X99 recipe.
 
 ## What you are trying to achieve
 
@@ -97,6 +97,10 @@ Target: place the 64-bit prefetchable window so both 32 GiB GPU BARs sit below 1
 with room for the full VRAM. A low base (around 1 TiB) with a window large enough to
 cover both cards works, but adjust to your own VRAM and other devices. Reconfigure the
 BIOS, then recheck `lspci` until the BAR addresses are below 16 TiB.
+
+> A worked, verified example for one board (Gigabyte X99-UD4-CF, BIOS F22), including
+> the exact variable, offsets, and enum values, is in
+> [boards/gigabyte-x99-ud4-f22.md](boards/gigabyte-x99-ud4-f22.md).
 
 **BIOS settings that matter:**
 

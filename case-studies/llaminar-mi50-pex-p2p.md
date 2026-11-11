@@ -2,7 +2,9 @@
 
 Research checkpoint: **2026-11-07**. Contributed from
 [Llaminar's investigation record][research], pinned to commit
-`a5d3ee32afdf4a3c5de3a5c243191b2842871995`.
+`a5d3ee32afdf4a3c5de3a5c243191b2842871995`. This case study also records the
+public PEX module source and the subsequent Llaminar peer-channel correction;
+the pinned investigation predates that correction.
 
 **Result:** BIOS **MMIO High Base = 4T**, unchanged **1024G** granularity,
 **identity DMA (`intel_iommu=on iommu=pt`)**, and the kernel/driver/module stack
@@ -19,11 +21,12 @@ switches/roots. The four MI50s share the `85:00/86:00` upstream tree and IOMMU
 group 36; the nearest pair, `97:00.0` and `9a:00.0`, is under `93:00.0`. The XTX
 at `49:00.0` is under the other root. These are this host's PCI addresses.
 
-**Qualification remains incomplete.** Lowering MMIO and selecting identity DMA
-were tested together, so neither change is independently proven causal. The
-first captured Llaminar peer-channel test subsequently failed byte comparison
-with a clean driver window. These native reads do not establish concurrent
-traffic, collective correctness, model correctness, or throughput.
+**The initial captured peer-channel mismatch was resolved in Llaminar.**
+[Corrected replays](#llaminar-captured-peer-channel-correction) pass on the
+original MI50 pair in both device orders. Lowering MMIO and selecting identity
+DMA were tested together, so neither change is independently proven causal.
+The native reads and corrected captured-channel replays have separate scopes;
+they do not by themselves establish every collective/model path or throughput.
 
 ## BIOS and effective Linux configuration
 
@@ -145,18 +148,23 @@ failure or qualify a new kernel build on another host.
 
 ## `pex_window`: resource layout, ReBAR, and load order
 
-`pex-window/0.1.2` is a locally authored DKMS package, separate from AMD and
+`pex-window/0.1.2` is an out-of-tree DKMS package, separate from AMD and
 NVIDIA. It builds `pex_window` from `/usr/src/pex-window-0.1.2`, installs under
 `updates/dkms`, and sets `AUTOINSTALL=yes`. Its implementation is in
 `pex_window.c`, `plan.h`, and `transaction.h`. The original source required no
 compatibility modification for the tested 6.17 kernels.
 
-**Source availability:** the investigation records the retained source at
-`/tmp/qfn-nvidia-pex617-qualification-r891/original/pex-window-0.1.2/`, but
-authenticates no public repository/revision for it. This case study records the
-module's identity and behavior; it does not distribute that source or provide
-a complete installer. The local `/tmp` path is not a public download or a
-guarantee of permanent availability.
+**Public source and installation instructions:**
+[dbsanfte/pex-window-driver][pex-project]. [Release `v0.1.2`][pex-release]
+corresponds to [source commit `f1fc1921fd1ef4759aacc0c18ab7173f21d4b11f`][pex-source].
+The retained test sources `pex_window.c`, `plan.h`, and `transaction.h` are
+byte-identical to those files in that public release commit.
+
+The release provides the versioned DKMS source asset `pex-window-0.1.2.tar.xz`
+and its SHA-256 checksum. Use matching headers/build files for the custom
+`6.17.0-1000-generic` kernel; the release's prebuilt module archives target
+other exact kernel ABIs. The repository documents building, installation,
+initramfs integration, validation, and rollback.
 
 The module plans the complete 64-bit prefetchable resource hierarchy of the
 PEX880xx trees, updating root/downstream bridge windows and GPU BARs together
@@ -249,39 +257,46 @@ route, and the traces do not identify the original faulty TLP. The evidence
 supports the combined mitigation without justifying a raw-BAR bypass,
 DMA-mask widening, or blanket IOMMU disable.
 
-## Captured transfer still fails
+## Llaminar captured peer-channel correction
 
-On the same successful native-read boot, the existing production-path test
-selected physical MI50s `97` and `9a` as ROCm ordinals 0 and 1:
+The first captured `PeerDevice` round trip on MI50s `97` and `9a` failed its
+first live byte (`replay=0 bytes=1 offset=1 first_bad_byte=1`) after the native
+reads passed. That historical failure, preserved in the pinned investigation,
+was subsequently resolved in Llaminar. This channel is separate from RCCL;
+its native-collective option was false.
 
-```text
-V2_Integration_CapturedPeerPayload_ROCm2_OriginalInventory
-  CapturedTransferPeerAdmission.ROCmOriginalInventory
-  coverage=complete
-  ROCm:0 -> ROCm:1 replay=0 bytes=1 offset=1 first_bad_byte=1
-```
+The corrected implementation uses explicit peer-visible ROCm storage via
+`hipExtMallocWithFlags(..., hipDeviceMallocUncached)` and places the 64-byte
+producer publication header in the same peer-visible allocation as the
+payload. The consumer observes that publication through its retained device
+binding. The tested path also retains non-temporal peer reads, with the
+publication pointer and storage geometry included in capture identity. These
+are Llaminar memory-visibility/publication changes; the replay did not require
+another BIOS, kernel, or module change.
 
-The actual captured `PeerDevice` channel round trip, after five warmups,
-failed its first live byte; the preceding inactive guard byte passed. CTest
-failed normally after 7.69 seconds, with a clean 8.079-second driver bracket
-and retirement of both device contexts and the owned MPI process. The
-counted-transfer replay was not reached. This path was **not RCCL**; its
-native-collective option was false.
+The original production-path registration now has passing follow-up receipts:
 
-No definite fixture defect or transport cause was established. The diagnostic
-did not record actual/expected byte values or intermediate payloads, leaving
-capture, ordering, visibility, and kernel behavior open. The tested Llaminar
-source was the investigation's r709 projection at
-`f48c856105f6d1495a4c342ed2cc0c62b4d11273` plus scoped admission-test changes,
-build r710; this differs from the documentation commit pinned above.
+| Test | MI50 device order | Result |
+|---|---|---|
+| `V2_Integration_CapturedPeerPayload_ROCm2_OriginalInventory` | Original `97`, `9a` order | Pass; exit 0, clean driver observation |
+| Same registration | Reversed `9a`, `97` order | Pass; exit 0, clean driver observation |
 
-Qualification still needs the captured-transfer failure resolved, followed by
-native RCCL parent/reentry and four-device captured epoch/gather tests, then
-the original QFN model admission and numerical workload. Collective transport
-logs must establish the route actually used. Performance requires separate,
-quiet matched measurements; durable diagnostic logging times are not link
-bandwidth measurements. The X99 performance numbers in the main write-up are
-not measurements of this configuration.
+Both ran on boot `2ef86b85-de24-4e81-8796-d5a21af56178`, the same boot as the
+successful native reads, with the recorded HSA allocation policy. The local
+follow-up evidence is under
+`/tmp/qfn-peer-channel-fix-r913/colocated-original-inventory/` and
+`/tmp/qfn-peer-channel-fix-r913/colocated-reverse-inventory/`: each retains
+`command.json`, `summary.json`, and `tests.xml`. These receipts belong to the
+corrected r709 source/build r710; they are later evidence than the linked
+research checkpoint, not a claim that its original source already contained
+the repair.
+
+This closes the specific captured MI50 peer-channel mismatch recorded above.
+Collective transport, broader topology/model coverage, and performance have
+their own validation scopes. Performance requires quiet matched measurements;
+durable diagnostic logging times are not link bandwidth measurements. The X99
+performance numbers in the main write-up are not measurements of this
+configuration.
 
 ## Rechecking configuration and preserving recovery
 
@@ -328,14 +343,17 @@ persistent logging, the existing hardware watchdog, and diagnostic load order.
 
 The linked investigation retains detailed trace correlations and historical
 local evidence paths. Those paths are provenance, not downloadable artifacts.
-The committed patch links below are permanent source references; the PEX source
-availability limitation above remains relevant to reproducing the complete
-stack.
+The committed kernel/AMD patches and public PEX source/release links below
+provide the source references for this configuration. The later peer-channel
+repair and its passing local receipts are recorded separately above.
 
 [research]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/ROCM_PEX_P2P_MMIO_IOMMU_RESEARCH_20261107.md
 [bios-record]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/ROCM_PEX_P2P_MMIO_IOMMU_RESEARCH_20261107.md#complete-user-supplied-bios-record
 [activation]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/QFN_HOST_KERNEL_DRIVER_ACTIVATION_20261107.md
 [recovery]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/ROCM_PEX_P2P_DIAGNOSTIC_RECOVERY_20261107.md
+[pex-project]: https://github.com/dbsanfte/pex-window-driver
+[pex-release]: https://github.com/dbsanfte/pex-window-driver/releases/tag/v0.1.2
+[pex-source]: https://github.com/dbsanfte/pex-window-driver/tree/f1fc1921fd1ef4759aacc0c18ab7173f21d4b11f
 [patch-qi]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/patches/rocm-pex-p2p-20261107/0001-intel-iommu-qi-recovery.patch
 [patch-sg]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/patches/rocm-pex-p2p-20261107/0002-iommu-sg-overflow.patch
 [patch-drm]: https://github.com/Llaminar/llaminar/blob/a5d3ee32afdf4a3c5de3a5c243191b2842871995/docs/v2/projects/2026-11/patches/rocm-pex-p2p-20261107/0003-drm-prime-segment-bound.patch

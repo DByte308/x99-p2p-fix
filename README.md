@@ -188,11 +188,12 @@ kernel/driver/module stack passed all **20 directed native peer reads**. The rep
 includes exact software identities, kernel patches, `pex_window` configuration,
 final BAR ranges, failed comparisons, and recovery details.
 
-The BIOS and DMA-domain changes were tested together. A subsequent captured
-Llaminar peer transfer still had a byte mismatch, so this report establishes a
-working native-read configuration; collective, model, and performance qualification
-remain open. It complements the X99 results above with evidence from another
-topology.
+The BIOS and DMA-domain changes were tested together. The initial captured
+peer-channel mismatch was subsequently resolved in Llaminar, with passing
+replays on the original MI50 pair in both device orders. The report links the
+public [`pex-window-driver` source and releases](https://github.com/dbsanfte/pex-window-driver)
+and records the scope of the native-read and corrected captured-transfer results.
+It complements the X99 results above with evidence from another topology.
 
 ## Credit
 
